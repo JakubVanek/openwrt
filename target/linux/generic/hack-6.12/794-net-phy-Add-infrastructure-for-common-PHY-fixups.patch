@@ -1,0 +1,105 @@
+From 8a1dc769e2e678fbd4974a41abdcbf1e6c40b751 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Thu, 26 Feb 2026 20:50:14 +0100
+Subject: [PATCH 4/5] net: phy: Add infrastructure for non-board-specific PHY
+ fixups
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some PHYs universally need to have a fixup applied even if their module
+is not loaded yet or the module is not installed.
+
+Notably, some PHYs incorrectly assume that MDIO address 0 is a broadcast
+address and so they respond both on address 0 and on their own address.
+This is problematic for at least two reasons:
+
+- Linux will register two struct phy_device for one actual device
+  if it executes a full MDIO bus scan.
+
+- If there is a PHY whose normal address is 0 on the same bus,
+  then MDIO address collisions will occur and neither of the PHYs
+  might work correctly.
+
+Defining a small PHY fixup in the core PHY code will allow these conflicts
+to be avoided before they happen.
+
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/phy/Makefile            |  2 +-
+ drivers/net/phy/phy_common_fixups.c | 13 +++++++++++++
+ drivers/net/phy/phy_common_fixups.h | 17 +++++++++++++++++
+ drivers/net/phy/phy_device.c        |  6 ++++++
+ 4 files changed, 37 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/phy/phy_common_fixups.c
+ create mode 100644 drivers/net/phy/phy_common_fixups.h
+
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -2,7 +2,7 @@
+ # Makefile for Linux PHY drivers
+ 
+ libphy-y			:= phy.o phy-c45.o phy-core.o phy_device.o \
+-				   linkmode.o phy_link_topology.o
++				   linkmode.o phy_link_topology.o phy_common_fixups.o
+ mdio-bus-y			+= mdio_bus.o mdio_device.o
+ 
+ ifdef CONFIG_MDIO_DEVICE
+--- /dev/null
++++ b/drivers/net/phy/phy_common_fixups.c
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: GPL-2.0+
++
++#include <linux/phy.h>
++
++#include "phy_common_fixups.h"
++
++/**
++ * phy_register_common_fixups - Register non-board-specific PHY fixups
++ */
++int phy_register_common_fixups()
++{
++	return 0;
++}
+--- /dev/null
++++ b/drivers/net/phy/phy_common_fixups.h
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Non-board specific PHY fixups.
++ *
++ * Some PHY interact badly with the Linux probing sequence and need to
++ * be reconfigured as early as possible. One example of this are PHYs
++ * that listen on address 0 (considered by some vendors to be a broadcast
++ * address) in addition to their normal address. These PHYs need to be
++ * reconfigured to listen only on their normal address.
++ */
++
++#ifndef PHY_COMMON_FIXUPS_H
++#define PHY_COMMON_FIXUPS_H
++
++extern int phy_register_common_fixups(void);
++
++#endif // PHY_COMMON_FIXUPS_H
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -40,6 +40,8 @@
+ #include <linux/uaccess.h>
+ #include <linux/unistd.h>
+ 
++#include "phy_common_fixups.h"
++
+ MODULE_DESCRIPTION("PHY library");
+ MODULE_AUTHOR("Andy Fleming");
+ MODULE_LICENSE("GPL");
+@@ -3890,6 +3892,10 @@ static int __init phy_init(void)
+ 	if (rc)
+ 		goto err_ethtool_phy_ops;
+ 
++	rc = phy_register_common_fixups();
++	if (rc)
++		goto err_mdio_bus;
++
+ 	features_init();
+ 
+ 	rc = phy_driver_register(&genphy_c45_driver, THIS_MODULE);

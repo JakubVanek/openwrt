@@ -1,0 +1,115 @@
+From 7aab2a48e4efed2132c2746edc627b01c6722b49 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Tue, 24 Feb 2026 22:06:34 +0100
+Subject: [PATCH 2/5] net: mdio: Probe PHY address 0 last
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Address 0 is incorrectly treated by some PHYs as a broadcast address.
+For many PHYs (Motorcomm YT8821, Realtek RTL8221B) this behaviour
+can be disabled using a vendor-specific internal register.
+
+Device-tree-based systems use of_mdiobus_register() to probe the
+MDIO bus. Modify it such that PHY address 0 is probed last.
+This allows PHY fixups to stop PHYs on addresses 1-31 from
+listening on address 0.
+
+I left one edge case working as before. When the device tree
+does not contain the PHY addresses, the DT nodes are assigned
+to PHYs in the order of their address. Changing the logic to
+probe address 0 last could break existing setups. For example,
+the DT snippet
+
+mdio-bus {
+	phy0: ethernet-phy {
+		compatible = "ethernet-phy-id1234.5678";
+	};
+	phy1: ethernet-phy {
+		compatible = "ethernet-phy-id90AB.CDEF";
+	};
+};
+
+may have the PHYs swapped if PHY address 0 was probed last.
+
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/mdio/of_mdio.c | 32 ++++++++++++++++++++++++++++----
+ 1 file changed, 28 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/mdio/of_mdio.c
++++ b/drivers/net/mdio/of_mdio.c
+@@ -27,6 +27,11 @@ MODULE_AUTHOR("Grant Likely <grant.likel
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("OpenFirmware MDIO bus (Ethernet PHY) accessors");
+ 
++enum probe_phase {
++	PROBE_PHASE_NOT_PHYAD_0,
++	PROBE_PHASE_PHYAD_0,
++};
++
+ /* Extract the clause 22 phy ID from the compatible string of the form
+  * ethernet-phy-idAAAA.BBBB */
+ static int of_get_phy_id(struct device_node *device, u32 *phy_id)
+@@ -140,7 +145,7 @@ bool of_mdiobus_child_is_phy(struct devi
+ EXPORT_SYMBOL(of_mdiobus_child_is_phy);
+ 
+ static int __of_mdiobus_parse_phys(struct mii_bus *mdio, struct device_node *np,
+-				   bool *scanphys)
++				   bool *scanphys, enum probe_phase phase)
+ {
+ 	struct device_node *child;
+ 	int addr, rc = 0;
+@@ -152,7 +157,7 @@ static int __of_mdiobus_parse_phys(struc
+ 			if (!of_property_present(child, "reg"))
+ 				continue;
+ 
+-			rc = __of_mdiobus_parse_phys(mdio, child, NULL);
++			rc = __of_mdiobus_parse_phys(mdio, child, NULL, phase);
+ 			if (rc && rc != -ENODEV)
+ 				goto exit;
+ 
+@@ -167,6 +172,12 @@ static int __of_mdiobus_parse_phys(struc
+ 			continue;
+ 		}
+ 
++		if ((phase == PROBE_PHASE_NOT_PHYAD_0) && (addr == 0))
++			continue;
++
++		if ((phase == PROBE_PHASE_PHYAD_0) && (addr != 0))
++			continue;
++
+ 		if (of_mdiobus_child_is_phy(child))
+ 			rc = of_mdiobus_register_phy(mdio, child, addr);
+ 		else
+@@ -226,8 +237,17 @@ int __of_mdiobus_register(struct mii_bus
+ 	if (rc)
+ 		return rc;
+ 
+-	/* Loop over the child nodes and register a phy_device for each phy */
+-	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys);
++	/* Loop over the child nodes and register a phy_device for each phy.
++	 * However, probe address 0 last. PHY fixups shall reconfigure PHYs
++	 * on addresses 1-31 to not listen on address 0 (considered by some
++	 * vendors to be a broadcast address) before we get to address 0. */
++	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys,
++				     PROBE_PHASE_NOT_PHYAD_0);
++	if (rc)
++		goto unregister;
++
++	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys,
++				     PROBE_PHASE_PHYAD_0);
+ 	if (rc)
+ 		goto unregister;
+ 
+@@ -241,6 +261,10 @@ int __of_mdiobus_register(struct mii_bus
+ 		    of_node_name_eq(child, "ethernet-phy-package"))
+ 			continue;
+ 
++		/* Skip the PROBE_PHASE_ALL_EXCEPT_PHYAD_0/PROBE_PHASE_PHYAD_0
++		 * stuff here. Some device tree setups may assume linear
++		 * assignment from address 0 onwards and the two-pass probing
++		 * is not worth breaking these setups. */
+ 		for (addr = 0; addr < PHY_MAX_ADDR; addr++) {
+ 			/* skip already registered PHYs */
+ 			if (mdiobus_is_registered_device(mdio, addr))

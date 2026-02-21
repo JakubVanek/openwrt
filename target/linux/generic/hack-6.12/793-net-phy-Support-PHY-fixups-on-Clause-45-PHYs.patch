@@ -1,0 +1,69 @@
+From fb9df5a8a13e007788bbb19876898109ee9ef5f2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Thu, 26 Feb 2026 18:50:37 +0100
+Subject: [PATCH 3/5] net: phy: Support PHY fixups on Clause 45 PHYs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+phydev->phy_id is zero on automatically discovered Clause 45 PHYs
+and so it cannot be used for matching PHY fixups. Instead, C45 PHYs
+have an array of per-MMD IDs in c45_ids. Copy the corresponding
+matching logic from phy_bus_match() to phy_needs_fixup() and make
+the function easier to read.
+
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/phy/phy_device.c | 39 +++++++++++++++++++++++++++++-------
+ 1 file changed, 32 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -555,14 +555,39 @@ EXPORT_SYMBOL(phy_unregister_fixup_for_i
+  */
+ static int phy_needs_fixup(struct phy_device *phydev, struct phy_fixup *fixup)
+ {
+-	if (strcmp(fixup->bus_id, phydev_name(phydev)) != 0)
+-		if (strcmp(fixup->bus_id, PHY_ANY_ID) != 0)
+-			return 0;
+-
+-	if (!phy_id_compare(phydev->phy_id, fixup->phy_uid,
+-			    fixup->phy_uid_mask))
+-		if (fixup->phy_uid != PHY_ANY_UID)
+-			return 0;
++	bool require_id_match = strcmp(fixup->bus_id, PHY_ANY_ID) != 0;
++	bool have_id_match = strcmp(fixup->bus_id, phydev_name(phydev)) == 0;
++
++	if (require_id_match && !have_id_match)
++		return 0;
++
++
++	bool require_uid_match = fixup->phy_uid != PHY_ANY_UID;
++	bool have_uid_match = false;
++
++	if (phydev->is_c45) {
++		const int num_ids = ARRAY_SIZE(phydev->c45_ids.device_ids);
++		int i;
++
++		for (i = 1; i < num_ids; i++) {
++			if (phydev->c45_ids.device_ids[i] == 0xffffffff)
++				continue;
++
++			if (phy_id_compare(phydev->c45_ids.device_ids[i],
++					   fixup->phy_uid,
++					   fixup->phy_uid_mask)) {
++				have_uid_match = true;
++				break;
++			}
++		}
++	} else {
++		have_uid_match = phy_id_compare(phydev->phy_id,
++						fixup->phy_uid,
++						fixup->phy_uid_mask);
++	}
++
++	if (require_uid_match && !have_uid_match)
++		return 0;
+ 
+ 	return 1;
+ }

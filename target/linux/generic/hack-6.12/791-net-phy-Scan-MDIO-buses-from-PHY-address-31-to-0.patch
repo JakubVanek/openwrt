@@ -1,0 +1,53 @@
+From 969fb5f9ae264c37520877cc33b239ead79090e0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Tue, 24 Feb 2026 22:04:36 +0100
+Subject: [PATCH 1/5] net: phy: Scan MDIO buses from PHY address 31 to 0
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Address 0 is incorrectly treated by some PHYs as a broadcast address.
+For many PHYs (Motorcomm YT8821, Realtek RTL8221B) this behaviour
+can be disabled using a vendor-specific internal register.
+
+To fix problems caused by scanning address 0 with multiple PHYs
+responding on it, reverse the MDIO bus scanning order. PHY fixups
+are then able to stop PHYs on addresses 1-31 from listening on
+address 0 before address 0 is scanned.
+
+This change does not fix the problem for device-tree-based systems.
+These don't rely on the scanning performed in mdiobus_register().
+Rather, of_mdiobus_register() directly probes the addresses specified
+in the DT. DT-based systems are addressed further in this series.
+
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/phy/mdio_bus.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -614,7 +614,10 @@ static int mdiobus_scan_bus_c22(struct m
+ {
+ 	int i;
+ 
+-	for (i = 0; i < PHY_MAX_ADDR; i++) {
++	/* Probe address 0 last. PHY fixups shall reconfigure PHYs on
++	 * addresses 1-31 to not listen on address 0 (considered by some
++	 * vendors to be a broadcast address) before we get to address 0. */
++	for (i = PHY_MAX_ADDR - 1; i >= 0; i--) {
+ 		if ((bus->phy_mask & BIT(i)) == 0) {
+ 			struct phy_device *phydev;
+ 
+@@ -630,7 +633,10 @@ static int mdiobus_scan_bus_c45(struct m
+ {
+ 	int i;
+ 
+-	for (i = 0; i < PHY_MAX_ADDR; i++) {
++	/* Probe address 0 last. PHY fixups shall reconfigure PHYs on
++	 * addresses 1-31 to not listen on address 0 (considered by some
++	 * vendors to be a broadcast address) before we get to address 0. */
++	for (i = PHY_MAX_ADDR - 1; i >= 0; i--) {
+ 		if ((bus->phy_mask & BIT(i)) == 0) {
+ 			struct phy_device *phydev;
+ 
