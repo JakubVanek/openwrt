@@ -1,0 +1,101 @@
+From 2bce4489ec93c5890d39137b722afabf4532932b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Thu, 26 Feb 2026 18:50:37 +0100
+Subject: [PATCH 3/5] net: phy: Support PHY fixups on Clause 45 PHYs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+For Clause 45 PHYs, phydev->phy_id is zero and therefore cannot be used
+to match PHY fixups. Clause 45 PHYs instead have per-MMD identifiers
+stored in phydev->c45_ids. Extend phy_needs_fixup() to match against
+these IDs by reusing the relevant matching logic from
+genphy_match_phy_device().
+
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/phy/phy_device.c | 58 ++++++++++++++++++++++++------------
+ 1 file changed, 39 insertions(+), 19 deletions(-)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -549,6 +549,42 @@ int phy_unregister_fixup_for_id(const ch
+ 	return phy_unregister_fixup(bus_id, PHY_ANY_UID, 0xffffffff);
+ }
+ EXPORT_SYMBOL(phy_unregister_fixup_for_id);
++ 
++/**
++ * genphy_check_device_id - match a PHY device against a given ID
++ * @phydev: target phy_device struct
++ * @phy_id: expected PHY ID
++ * @phy_id_mask: the PHY ID mask, set bits are significant in matching
++ *
++ * Description: Checks whether the given PHY device matches the specified
++ * ID. For Clause 45 PHYs, iterates over the available device identifiers
++ * and compares them against the expected PHY ID, applying the provided mask.
++ * For Clause 22 PHYs, a direct ID comparison is performed.
++ *
++ * Return: true if the PHY device matches the masked ID, false otherwise.
++ */
++static bool genphy_check_device_id(struct phy_device *phydev,
++				   u32 phy_id, u32 phy_id_mask)
++{
++	if (phydev->is_c45) {
++		const int num_ids = ARRAY_SIZE(phydev->c45_ids.device_ids);
++		int i;
++
++		for (i = 1; i < num_ids; i++) {
++			if (phydev->c45_ids.device_ids[i] == 0xffffffff)
++				continue;
++
++			if (phy_id_compare(phydev->c45_ids.device_ids[i],
++					   phy_id, phy_id_mask))
++				return true;
++		}
++
++		return false;
++	}
++
++	return phy_id_compare(phydev->phy_id, phy_id,
++			      phy_id_mask);
++}
+ 
+ /* Returns 1 if fixup matches phydev in bus_id and phy_uid.
+  * Fixups can be set to match any in one or more fields.
+@@ -559,8 +595,8 @@ static int phy_needs_fixup(struct phy_de
+ 		if (strcmp(fixup->bus_id, PHY_ANY_ID) != 0)
+ 			return 0;
+ 
+-	if (!phy_id_compare(phydev->phy_id, fixup->phy_uid,
+-			    fixup->phy_uid_mask))
++	if (!genphy_check_device_id(phydev, fixup->phy_uid,
++				    fixup->phy_uid_mask))
+ 		if (fixup->phy_uid != PHY_ANY_UID)
+ 			return 0;
+ 
+@@ -605,24 +641,7 @@ static int phy_scan_fixups(struct phy_de
+ int genphy_match_phy_device(struct phy_device *phydev,
+ 			    const struct phy_driver *phydrv)
+ {
+-	if (phydev->is_c45) {
+-		const int num_ids = ARRAY_SIZE(phydev->c45_ids.device_ids);
+-		int i;
+-
+-		for (i = 1; i < num_ids; i++) {
+-			if (phydev->c45_ids.device_ids[i] == 0xffffffff)
+-				continue;
+-
+-			if (phy_id_compare(phydev->c45_ids.device_ids[i],
+-					   phydrv->phy_id, phydrv->phy_id_mask))
+-				return 1;
+-		}
+-
+-		return 0;
+-	}
+-
+-	return phy_id_compare(phydev->phy_id, phydrv->phy_id,
+-			      phydrv->phy_id_mask);
++	return genphy_check_device_id(phydev, phydrv->phy_id, phydrv->phy_id_mask);
+ }
+ EXPORT_SYMBOL_GPL(genphy_match_phy_device);
+ 

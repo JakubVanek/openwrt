@@ -1,0 +1,63 @@
+From ddf5978d3a390fa6da39705c9d990834ce414ff1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Tue, 24 Feb 2026 22:04:36 +0100
+Subject: [PATCH 1/5] net: mdio_bus: Scan buses in reverse order (31 -> 0)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some PHY devices incorrectly treat address 0 as a broadcast address.
+As a result, accesses to address 0 may cause multiple PHYs to respond,
+making one or both PHYs work unreliably. In other cases, the PHY may be
+detected twice by Linux: once at address 0 and once at its actual
+address).
+
+On several PHYs (e.g. Motorcomm YT8821 and Realtek RTL8221B), this
+behavior can be disabled via a vendor-specific internal register.
+However, for that to be useful, that register would have to be
+programmed before address 0 is accessed for the first time.
+
+On non-Device Tree systems, MDIO buses are typically scanned in
+mdiobus_register(). Change the address scan order from 0->31 to 31->0
+so that PHY fixups are applied to addresses 1-31 before address 0
+is probed. This way the address collision can be avoided.
+
+Device Tree-based systems require a different approach. In that case,
+of_mdiobus_register() probes only the addresses explicitly described
+in the Device Tree. Handling for DT-based systems is implemented in
+a separate commit.
+
+Suggested-by: Daniel Golle <daniel@makrotopia.org>
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/phy/mdio_bus.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -614,7 +614,11 @@ static int mdiobus_scan_bus_c22(struct m
+ {
+ 	int i;
+ 
+-	for (i = 0; i < PHY_MAX_ADDR; i++) {
++	/* Scan address 0 last. Some vendors consider it a broadcast address
++	 * and so their PHYs respond on in addition to the actual PHY address.
++	 * Scanning addresses 1-31 first allows PHY fixups to reconfigure these
++	 * PHYs to not respond on address 0 before we try to scan it. */
++	for (i = PHY_MAX_ADDR - 1; i >= 0; i--) {
+ 		if ((bus->phy_mask & BIT(i)) == 0) {
+ 			struct phy_device *phydev;
+ 
+@@ -630,7 +634,11 @@ static int mdiobus_scan_bus_c45(struct m
+ {
+ 	int i;
+ 
+-	for (i = 0; i < PHY_MAX_ADDR; i++) {
++	/* Scan address 0 last. Some vendors consider it a broadcast address
++	 * and so their PHYs respond on in addition to the actual PHY address.
++	 * Scanning addresses 1-31 first allows PHY fixups to reconfigure these
++	 * PHYs to not respond on address 0 before we try to scan it. */
++	for (i = PHY_MAX_ADDR - 1; i >= 0; i--) {
+ 		if ((bus->phy_mask & BIT(i)) == 0) {
+ 			struct phy_device *phydev;
+ 

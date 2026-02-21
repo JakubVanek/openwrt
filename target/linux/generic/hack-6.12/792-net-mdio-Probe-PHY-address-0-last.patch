@@ -1,0 +1,126 @@
+From 3144378b3a652923930451b6cffc4cf06a2518c2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Tue, 24 Feb 2026 22:06:34 +0100
+Subject: [PATCH 2/5] of: mdio: Scan PHY address 0 last
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some PHY devices incorrectly treat address 0 as a broadcast address.
+As a result, accesses to address 0 may cause multiple PHYs to respond,
+making one or both PHYs work unreliably.
+
+On several PHYs (e.g. Motorcomm YT8821 and Realtek RTL8221B), this
+behavior can be disabled via a vendor-specific internal register.
+However, for that to be useful, that register would have to be
+programmed before address 0 is accessed for the first time.
+
+Device Tree-based systems scan MDIO buses via of_mdiobus_register().
+Modify the scanning order so that address 0 is scanned last. This
+ensures PHY fixups for addresses 1-31 are applied before address 0
+is accessed, allowing the collision to be prevented.
+
+However, preserve the original probing order for one edge case: when
+the Device Tree does not explicitly specify PHY addresses. In that
+scenario, PHY DT nodes appear to be matched to devices based on a
+sequential bus scan. Changing the scanning sequence could change
+the association between DT nodes and PHY devices and potentially break
+existing setups.
+
+For example, with:
+
+    mdio-bus {
+        phy0: ethernet-phy {
+            compatible = "ethernet-phy-id1234.5678";
+        };
+        phy1: ethernet-phy {
+            compatible = "ethernet-phy-id90AB.CDEF";
+        };
+    };
+
+scanning address 0 last could cause the PHY on address 0 to be associated
+with the phy1 node.
+
+Suggested-by: Daniel Golle <daniel@makrotopia.org>
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/mdio/of_mdio.c | 33 +++++++++++++++++++++++++++++----
+ 1 file changed, 29 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/mdio/of_mdio.c
++++ b/drivers/net/mdio/of_mdio.c
+@@ -27,6 +27,11 @@ MODULE_AUTHOR("Grant Likely <grant.likel
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("OpenFirmware MDIO bus (Ethernet PHY) accessors");
+ 
++enum scan_phase {
++	SCAN_PHASE_NOT_PHYAD_0,
++	SCAN_PHASE_PHYAD_0,
++};
++
+ /* Extract the clause 22 phy ID from the compatible string of the form
+  * ethernet-phy-idAAAA.BBBB */
+ static int of_get_phy_id(struct device_node *device, u32 *phy_id)
+@@ -140,7 +145,7 @@ bool of_mdiobus_child_is_phy(struct devi
+ EXPORT_SYMBOL(of_mdiobus_child_is_phy);
+ 
+ static int __of_mdiobus_parse_phys(struct mii_bus *mdio, struct device_node *np,
+-				   bool *scanphys)
++				   bool *scanphys, enum scan_phase phase)
+ {
+ 	struct device_node *child;
+ 	int addr, rc = 0;
+@@ -152,7 +157,7 @@ static int __of_mdiobus_parse_phys(struc
+ 			if (!of_property_present(child, "reg"))
+ 				continue;
+ 
+-			rc = __of_mdiobus_parse_phys(mdio, child, NULL);
++			rc = __of_mdiobus_parse_phys(mdio, child, NULL, phase);
+ 			if (rc && rc != -ENODEV)
+ 				goto exit;
+ 
+@@ -167,6 +172,12 @@ static int __of_mdiobus_parse_phys(struc
+ 			continue;
+ 		}
+ 
++		if ((phase == SCAN_PHASE_NOT_PHYAD_0) && (addr == 0))
++			continue;
++
++		if ((phase == SCAN_PHASE_PHYAD_0) && (addr != 0))
++			continue;
++
+ 		if (of_mdiobus_child_is_phy(child))
+ 			rc = of_mdiobus_register_phy(mdio, child, addr);
+ 		else
+@@ -226,8 +237,18 @@ int __of_mdiobus_register(struct mii_bus
+ 	if (rc)
+ 		return rc;
+ 
+-	/* Loop over the child nodes and register a phy_device for each phy */
+-	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys);
++	/* Loop over the child nodes and register a phy_device for each phy.
++	 * However, scan address 0 last. Some vendors consider it a broadcast
++	 * address and so their PHYs respond on in addition to the actual PHY
++	 * address. Scanning addresses 1-31 first allows PHY fixups to stop
++	 * a potential collision on address 0 from occurring. */
++	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys,
++				     SCAN_PHASE_NOT_PHYAD_0);
++	if (rc)
++		goto unregister;
++
++	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys,
++				     SCAN_PHASE_PHYAD_0);
+ 	if (rc)
+ 		goto unregister;
+ 
+@@ -241,6 +262,10 @@ int __of_mdiobus_register(struct mii_bus
+ 		    of_node_name_eq(child, "ethernet-phy-package"))
+ 			continue;
+ 
++		/* Skip the SCAN_PHASE_NOT_PHYAD_0/SCAN_PHASE_PHYAD_0
++		 * stuff here. Some device tree setups may assume linear
++		 * assignment from address 0 onwards and the two-pass probing
++		 * is not worth breaking these setups. */
+ 		for (addr = 0; addr < PHY_MAX_ADDR; addr++) {
+ 			/* skip already registered PHYs */
+ 			if (mdiobus_is_registered_device(mdio, addr))

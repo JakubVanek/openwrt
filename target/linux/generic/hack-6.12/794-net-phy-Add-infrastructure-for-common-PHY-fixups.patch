@@ -1,0 +1,103 @@
+From c2dc74d0b5ea0fa5ca4a88a9b5769873fb6de705 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Thu, 26 Feb 2026 20:50:14 +0100
+Subject: [PATCH 4/5] net: phy: Add infrastructure for shared PHY fixups
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Certain PHYs incorrectly treat MDIO address 0 as a broadcast address and
+therefore respond both on address 0 and on their assigned address.
+As outlined in the code, this is problematic. Provide a way to
+disable this behaviour via a PHY fixup.
+
+It would be ideal to have these collisions prevented early
+by the bootloader, but there may be hardware out there where
+the bootloader doesn't do this and cannot be easily replaced.
+
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/phy/Makefile            |  2 +-
+ drivers/net/phy/phy_common_fixups.c | 26 ++++++++++++++++++++++++++
+ drivers/net/phy/phy_common_fixups.h | 11 +++++++++++
+ drivers/net/phy/phy_device.c        |  6 ++++++
+ 4 files changed, 44 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/phy/phy_common_fixups.c
+ create mode 100644 drivers/net/phy/phy_common_fixups.h
+
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -2,7 +2,7 @@
+ # Makefile for Linux PHY drivers
+ 
+ libphy-y			:= phy.o phy-c45.o phy-core.o phy_device.o \
+-				   linkmode.o phy_link_topology.o
++				   linkmode.o phy_link_topology.o phy_common_fixups.o
+ mdio-bus-y			+= mdio_bus.o mdio_device.o
+ 
+ ifdef CONFIG_MDIO_DEVICE
+--- /dev/null
++++ b/drivers/net/phy/phy_common_fixups.c
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: GPL-2.0+
++
++#include <linux/phy.h>
++
++#include "phy_common_fixups.h"
++
++/**
++ * phy_register_address_0_fixups - Register fixups for disabling MDIO
++ * broadcast on address 0
++ *
++ * Some vendors interpret MDIO address 0 as a broadcast address and so their
++ * PHYs initially respond both on address 0 as well as on their normal
++ * address. This is problematic:
++ *  - Linux may create two struct phy_device for a single device.
++ *  - MDIO address collision may occur if there is another PHY
++ *    legitimately listening on address 0.
++ *
++ * The broadcast address can often be disabled through some internal
++ * PHY register. These fixups are designed to do just that --
++ * they shall stop these PHYs from responding on address 0 before
++ * the MDIO address 0 is scanned for devices.
++ */
++int phy_register_address_0_fixups(void)
++{
++	return 0;
++}
+--- /dev/null
++++ b/drivers/net/phy/phy_common_fixups.h
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Non-board specific PHY fixups.
++ */
++
++#ifndef PHY_COMMON_FIXUPS_H
++#define PHY_COMMON_FIXUPS_H
++
++extern int phy_register_address_0_fixups(void);
++
++#endif // PHY_COMMON_FIXUPS_H
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -40,6 +40,8 @@
+ #include <linux/uaccess.h>
+ #include <linux/unistd.h>
+ 
++#include "phy_common_fixups.h"
++
+ MODULE_DESCRIPTION("PHY library");
+ MODULE_AUTHOR("Andy Fleming");
+ MODULE_LICENSE("GPL");
+@@ -3884,6 +3886,10 @@ static int __init phy_init(void)
+ 	if (rc)
+ 		goto err_ethtool_phy_ops;
+ 
++	rc = phy_register_address_0_fixups();
++	if (rc)
++		goto err_mdio_bus;
++
+ 	features_init();
+ 
+ 	rc = phy_driver_register(&genphy_c45_driver, THIS_MODULE);
