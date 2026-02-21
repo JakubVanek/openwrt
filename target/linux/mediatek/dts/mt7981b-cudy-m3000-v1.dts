@@ -108,8 +108,7 @@
 	reset-post-delay-us = <100000>;
 
 	wan_phy: ethernet-phy@1 {
-		/* Either Realtek RTL8221B-VB-CG or Motorcomm YT8821
-		 * (but YT8821 does not work reliably when auto-detected) */
+		/* Either Realtek RTL8221B-VB-CG or Motorcomm YT8821 */
 		compatible = "ethernet-phy-ieee802.3-c45";
 		reg = <1>;
 		interrupts = <38 IRQ_TYPE_LEVEL_LOW>;
