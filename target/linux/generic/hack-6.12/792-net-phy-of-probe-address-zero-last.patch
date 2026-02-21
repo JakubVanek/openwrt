@@ -1,0 +1,88 @@
+From 3edde6326f3e5d99bcf700574f5b79996f982588 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Tue, 24 Feb 2026 22:06:34 +0100
+Subject: [PATCH 2/3] net: mdio: of_mdio: Probe PHY address 0 last
+
+Address 0 is incorrectly treated by some PHYs as a broadcast address.
+Give these PHYs a chance to stop listening on that address by
+probing addresses 1-31 before probing address 0.
+---
+ drivers/net/mdio/of_mdio.c | 32 ++++++++++++++++++++++++++++----
+ 1 file changed, 28 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/mdio/of_mdio.c
++++ b/drivers/net/mdio/of_mdio.c
+@@ -27,6 +27,11 @@ MODULE_AUTHOR("Grant Likely <grant.likel
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("OpenFirmware MDIO bus (Ethernet PHY) accessors");
+ 
++enum probe_phase {
++	PROBE_PHASE_NOT_PHYAD_0,
++	PROBE_PHASE_PHYAD_0,
++};
++
+ /* Extract the clause 22 phy ID from the compatible string of the form
+  * ethernet-phy-idAAAA.BBBB */
+ static int of_get_phy_id(struct device_node *device, u32 *phy_id)
+@@ -140,7 +145,7 @@ bool of_mdiobus_child_is_phy(struct devi
+ EXPORT_SYMBOL(of_mdiobus_child_is_phy);
+ 
+ static int __of_mdiobus_parse_phys(struct mii_bus *mdio, struct device_node *np,
+-				   bool *scanphys)
++				   bool *scanphys, enum probe_phase phase)
+ {
+ 	struct device_node *child;
+ 	int addr, rc = 0;
+@@ -152,7 +157,7 @@ static int __of_mdiobus_parse_phys(struc
+ 			if (!of_property_present(child, "reg"))
+ 				continue;
+ 
+-			rc = __of_mdiobus_parse_phys(mdio, child, NULL);
++			rc = __of_mdiobus_parse_phys(mdio, child, NULL, phase);
+ 			if (rc && rc != -ENODEV)
+ 				goto exit;
+ 
+@@ -167,6 +172,12 @@ static int __of_mdiobus_parse_phys(struc
+ 			continue;
+ 		}
+ 
++		if ((phase == PROBE_PHASE_NOT_PHYAD_0) && (addr == 0))
++			continue;
++
++		if ((phase == PROBE_PHASE_PHYAD_0) && (addr != 0))
++			continue;
++
+ 		if (of_mdiobus_child_is_phy(child))
+ 			rc = of_mdiobus_register_phy(mdio, child, addr);
+ 		else
+@@ -226,8 +237,17 @@ int __of_mdiobus_register(struct mii_bus
+ 	if (rc)
+ 		return rc;
+ 
+-	/* Loop over the child nodes and register a phy_device for each phy */
+-	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys);
++	/* Loop over the child nodes and register a phy_device for each phy.
++	 * However, probe address 0 last. Driver probe callbacks shall reconfigure
++	 * other PHYs that assume that address 0 is a broadcast address before
++	 * we get to address 0. */
++	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys,
++				     PROBE_PHASE_NOT_PHYAD_0);
++	if (rc)
++		goto unregister;
++
++	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys,
++				     PROBE_PHASE_PHYAD_0);
+ 	if (rc)
+ 		goto unregister;
+ 
+@@ -241,6 +261,10 @@ int __of_mdiobus_register(struct mii_bus
+ 		    of_node_name_eq(child, "ethernet-phy-package"))
+ 			continue;
+ 
++		/* Skip the PROBE_PHASE_ALL_EXCEPT_PHYAD_0/PROBE_PHASE_PHYAD_0
++		 * stuff here. Some device tree setups may assume linear
++		 * assignment from address 0 onwards and the two-pass probing
++		 * is not worth breaking these setups. */
+ 		for (addr = 0; addr < PHY_MAX_ADDR; addr++) {
+ 			/* skip already registered PHYs */
+ 			if (mdiobus_is_registered_device(mdio, addr))
