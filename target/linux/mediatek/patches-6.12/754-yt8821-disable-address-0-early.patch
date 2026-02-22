@@ -1,0 +1,136 @@
+--- a/drivers/net/mdio/of_mdio.c
++++ b/drivers/net/mdio/of_mdio.c
+@@ -139,6 +139,121 @@ bool of_mdiobus_child_is_phy(struct devi
+ }
+ EXPORT_SYMBOL(of_mdiobus_child_is_phy);
+ 
++
++#define YTPHY_PAGE_SELECT			0x1E
++#define YTPHY_PAGE_DATA				0x1F
++#define YTPHY_MDIO_ADDRESS_CONTROL_REG		0xA005
++#define YTPHY_MACR_EN_PHY_ADDR_0		BIT(6)
++
++static int __of_mdiobus_cleanup_address_0_motorcomm(struct mii_bus *mdio, u32 phy_addr)
++{
++	int rc = 0;
++	mutex_lock(&mdio->mdio_lock);
++
++	rc = __mdiobus_write(mdio, phy_addr,
++			     YTPHY_PAGE_SELECT,
++			     YTPHY_MDIO_ADDRESS_CONTROL_REG);
++	if (rc) {
++		goto exit;
++	}
++
++	rc = __mdiobus_modify(mdio, phy_addr,
++			      YTPHY_PAGE_DATA,
++			      YTPHY_MACR_EN_PHY_ADDR_0,
++			      0);
++
++exit:
++	mutex_unlock(&mdio->mdio_lock);
++	return rc;
++
++}
++
++static int __of_mdiobus_cleanup_address_0_phy(struct mii_bus *mdio, u32 phy_id, u32 phy_addr)
++{
++	int rc = 0;
++	switch (phy_id)
++	{
++	case 0x4f51ea19:
++		rc = __of_mdiobus_cleanup_address_0_motorcomm(mdio, phy_addr);
++		break; 
++	}
++	return rc;
++}
++
++static int __get_phy_c22_id(struct mii_bus *bus, int addr, u32 *phy_id)
++{
++	int phy_reg;
++
++	/* Grab the bits from PHYIR1, and put them in the upper half */
++	phy_reg = mdiobus_read(bus, addr, MII_PHYSID1);
++	if (phy_reg < 0) {
++		/* returning -ENODEV doesn't stop bus scanning */
++		return (phy_reg == -EIO || phy_reg == -ENODEV) ? -ENODEV : -EIO;
++	}
++
++	*phy_id = phy_reg << 16;
++
++	/* Grab the bits from PHYIR2, and put them in the lower half */
++	phy_reg = mdiobus_read(bus, addr, MII_PHYSID2);
++	if (phy_reg < 0) {
++		/* returning -ENODEV doesn't stop bus scanning */
++		return (phy_reg == -EIO || phy_reg == -ENODEV) ? -ENODEV : -EIO;
++	}
++
++	*phy_id |= phy_reg;
++
++	/* If the phy_id is mostly Fs, there is no device there */
++	if ((*phy_id & 0x1fffffff) == 0x1fffffff)
++		return -ENODEV;
++
++	return 0;
++}
++
++static int __of_mdiobus_cleanup_address_0(struct mii_bus *mdio, struct device_node *np)
++{
++	struct device_node *child;
++	int phy_addr, rc = 0;
++
++	/* Loop over the child nodes to see if any of them requires the fixup */
++	for_each_available_child_of_node(np, child) {
++		if (!of_mdiobus_child_is_phy(child)) {
++			/* Currently only PHYs have fixups */
++			continue;
++		}
++
++		if (!of_property_read_bool(child, "mediatek,address-0-workaround")) {
++			/* The fixup requires an explicit opt-in */
++			continue;
++		}
++
++		phy_addr = of_mdio_parse_addr(&mdio->dev, child);
++		if (phy_addr < 0) {
++			/* Device address shall be known ahead of time */
++			continue;
++		}
++
++		u32 phy_id;
++		if ((of_get_phy_id(child, &phy_id)             == 0) ||
++		    (__get_phy_c22_id(mdio, phy_addr, &phy_id) == 0))
++		{
++			rc = __of_mdiobus_cleanup_address_0_phy(mdio, phy_id, phy_addr);
++		}
++		else
++		{
++			/* skip */
++			rc = 0;
++		}
++
++		if (rc)
++			goto exit;
++	}
++
++	return 0;
++exit:
++	of_node_put(child);
++	return rc;
++}
++
+ static int __of_mdiobus_parse_phys(struct mii_bus *mdio, struct device_node *np,
+ 				   bool *scanphys)
+ {
+@@ -226,6 +341,11 @@ int __of_mdiobus_register(struct mii_bus
+ 	if (rc)
+ 		return rc;
+ 
++	/* Resolve conflicts on address 0 */
++	rc = __of_mdiobus_cleanup_address_0(mdio, np);
++	if (rc)
++		return rc;
++
+ 	/* Loop over the child nodes and register a phy_device for each phy */
+ 	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys);
+ 	if (rc)

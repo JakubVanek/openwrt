@@ -113,6 +113,8 @@
 		reg = <1>;
 		interrupts = <38 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-parent = <&pio>;
+
+		mediatek,address-0-workaround;
 	};
 };
 
