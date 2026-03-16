@@ -10,12 +10,15 @@
 };
 
 &mdio_bus {
+	/*
+	 * HW reset is handled in U-Boot. U-Boot also applies
+	 * a workaround for a MDIO bus address collision, so Linux
+	 * may not hard-reset the PHY anyway.
+	 */
+
 	wan_phy: ethernet-phy@1 {
 		compatible = "ethernet-phy-ieee802.3-c45";
 		reg = <1>;
-		reset-assert-us = <100000>;
-		reset-deassert-us = <100000>;
-		reset-gpios = <&pio 39 GPIO_ACTIVE_LOW>;
 		interrupts = <38 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-parent = <&pio>;
 	};
